@@ -1,0 +1,194 @@
+---
+title: "Practical Machine Learning"
+output:
+  html_document:
+    theme: cerulean
+  pdf_document: default
+  word_document: default
+date: "10/23/2015"
+---
+
+```{r echo=FALSE, warning=FALSE}
+#Setting wd
+setwd("D:/Copy/Online Courses/In Progress/Practical Machine Learning (Coursera)/Assignment")
+
+#Loading data set
+pml <- read.csv("D:/Copy/Online Courses/In Progress/Practical Machine Learning (Coursera)/Assignment/pml-training.csv")
+```
+
+```{r warning=FALSE, message = FALSE}
+#Loading all required libraries
+library(caret)
+#In order to perform training in parallel on 4 cores
+library(doParallel)
+registerDoParallel(cores=4)
+```
+
+### Cleaning data set
+
+First of all, in order to perform any kind of analysis, our training data should be cleaned.  
+```{r warning=FALSE, message = FALSE}
+#Lets examine dimension of original data
+dim(pml)
+```
+
+Currently, data set contains 160 variables (including response variable "classe") and 19622 cases.  
+
+1. Deleting all attributes that have more than 90% NAs:  
+```{r warning=FALSE, message = FALSE}
+#Number of variables that have more than 90% NAs
+sum(!apply(pml, MARGIN = 2, FUN = function (column) {sum(is.na(column))}) < 0.1 * nrow(pml))
+
+#Removing variables with a lot of NAs
+pml <- pml[, apply(pml, MARGIN = 2, FUN = function (column) {sum(is.na(column))}) < 0.1 * nrow(pml)]
+
+#Dimension of data set without NAs
+dim(pml)
+```
+
+So, 67 attributes of original data have >= 90% NAs. To use these attributes to build model we should decrease size of out data more than 10 times. Better way - just to ignore these variables.  
+
+2. Deleting variables with small variance:
+```{r warning=FALSE, message = FALSE}
+#Number of "near zero variance" variables
+nsv <- nearZeroVar(pml, saveMetrics = TRUE)
+sum(nsv$nzv)
+
+#Removing "near zero variance" variables from data set
+pml <- pml[,!nsv$nzv]
+
+#Dimension of data set without "near zero variance" variables
+dim(pml)
+```
+
+34 variables will not increase accuracy of prediction because their variation is pretty small (entropy is almost zero). They also shouldn't be used for training.  
+
+3. Deleting "no-sense"" variables:
+```{r warning=FALSE, message = FALSE}
+#Deleting timestamps and order variables
+pml <- pml[, -c(1, 3, 4, 5)]
+
+#Dimension of data
+dim(pml)
+```
+
+There are no useful information in variables: "X", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp".  
+
+4. Verifying if there are no NAs left:
+```{r warning=FALSE, message = FALSE}
+#Number of NAs in final data
+sum(apply(pml, MARGIN = 2, FUN = function (column) {sum(is.na(column))}))
+```
+
+So, there are no NAs in data. We have 54 predictors and one response variable.
+
+***
+
+### Training model
+
+1. Splitting data set on training and testing:
+```{r warning=FALSE, message = FALSE}
+#Splitting data
+set.seed(0)
+inTrain <- createDataPartition(y=pml$classe, p=0.8, list=FALSE)
+training <- pml[inTrain,]
+testing <- pml[-inTrain,]
+dim(training); dim(testing)
+```
+
+There are 15699 cases for training and 3923 cases for testing.  
+
+2. Cross-validation:  
+```{r warning=FALSE, message = FALSE}
+#Cross-validation options
+fitControl = trainControl(method = "repeatedcv", number = 10, repeats = 5, verboseIter = TRUE)
+```
+
+In order to tune model and find out of sample error cross-validation has been used.  
+Type of cross-validation - k-folds with 10 folds and 5 repeats.  
+
+3. Model and tuning space:  
+```{r warning=FALSE, message = FALSE}
+#Tuning options
+c50Grid <- expand.grid(.trials = c(1:100),
+                       .model = c("tree"),
+                       .winnow = c(TRUE, FALSE))
+```
+
+c50 boosting model is being used. Boosting is the process of adding weak learners in such a way that newer learners pick up the slack of older learners. So, this approach end up with set of trees (not rules, because of tuning option .model = c("tree")). Every next tree will try to improve accuracy of prediction for the cases, which previous trees predict not so well. Splitting while building trees is performed based on information gain. Another options, which set for tuning - trials - number of possible trees to be used (in my case this number will range in 1:100); winnow - possibly to use and no use such approach to deal with overfitting. Winnowing means trying to remove predictors to improve model accuracy.  
+
+4. Training model:  
+```{r warning=FALSE, message = FALSE, eval = FALSE}
+#Training model
+C50_model <- train(classe ~.,
+                   method = "C5.0",
+                   data = training,
+                   tuneGrid = c50Grid,
+                   trControl = fitControl)
+```
+
+training data is used for training. Also, as could be observed, all variables are being used to build model to predict "classe" variable. eval = FALSE have been used in this chunk to save time (model evaluating and tuning takes almost 1 hour on 4 cores). Next code will load already tuned model from my working directory:  
+
+```{r warning=FALSE, message = FALSE}
+#Loading tuned model
+load(file = "C50_model.rda")
+```
+
+***
+
+### Examining and evaluating model  
+
+1. Best tuning parameters:
+```{r warning=FALSE, message = FALSE}
+#Tuning process
+plot(C50_model)
+```
+
+This plot shows tuning process. There are two lines. First one shows cross-validation accuracy for different number of trials with no winnowing. Second one - with winnowing. As could be observed, there are almost no difference of using or no using winnowing, accuracy almost the same. Moreover, starting from approximately 20 trials also lead almost to the same accuracy. So, there are almost no difference of using 20 or up to 100 trees.  
+Best tuning parameters:  
+```{r warning=FALSE, message = FALSE}
+#Tuning parameters
+C50_model$bestTune
+```
+
+2. Density of accuracy and Kappa coefficients for k-folds cross-validation iterations:
+
+```{r warning=FALSE, message = FALSE}
+#Density of accuracy and Kappa for different k-folds cross-validation iterations
+resampleHist(C50_model, type = "density", layout = c(2, 1), adjust = 1.5)
+```
+
+As could be observed, model is highly accurate (Any k-fold iteration has more than 99% accuracy).  
+
+3. Important variables for prediction:
+```{r warning=FALSE, message = FALSE, fig.height=10}
+#Important variables
+important_variables <- varImp(C50_model, scale = TRUE)
+plot(important_variables, top = 58)
+```
+
+This plot shows how different variables are important for built model. As could be observed, there are 8 variables which aren't important for prediction at all.
+
+```{r warning=FALSE, message = FALSE}
+#No important variables
+row.names(tail(important_variables$importance, 8))
+```
+
+4. Accuracy on training data (in sample error)  
+
+```{r warning=FALSE, message = FALSE}
+#In sample error
+confusionMatrix(training$classe, predict(C50_model, newdata = training))
+```  
+
+As could be observed, model reports best possible accuracy -> 1 on training data. No cases were classified incorrectly.
+
+5. Accuracy on testing data (out of sample error)  
+
+```{r warning=FALSE, message = FALSE}
+#Out of sample error
+confusionMatrix(testing$classe, predict(C50_model, newdata = testing))
+```  
+
+As could be observed, model reports pretty high accuracy -> 0.9987 on testing data. Only 5 cases were classified incorrectly.
+All 20 cases form pml.testing data also were classified correctly by this model.
